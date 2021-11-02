@@ -9,6 +9,7 @@ if not exists (select * from [sysobjects] where [name] = 'Meanings' and [xtype] 
 begin
 	create table [Meanings] (
 		[ID] int identity(1,1) not null primary key,
+        [Meaning] varchar(500) null
 	);
 end
 go

@@ -6,6 +6,7 @@ namespace Thesaurus
     using System.Threading.Tasks;
     using Microsoft.EntityFrameworkCore;
     using global::Thesaurus.Models;
+    using ThesaurusDTOs;
 
     public sealed class Thesaurus : IThesaurus, IDisposable
     {
@@ -18,21 +19,30 @@ namespace Thesaurus
             wordHelper = new WordHelper();
         }
 
-        public async Task<int> AddWordAsync(string word, List<string> synonyms)
+        public async Task<int> AddWordAsync(string word, string meaning, List<string> synonyms)
         {
             if (word != null && !string.IsNullOrWhiteSpace(word))
             {
-                var newMeaning = new Meaning();
+                var newMeaning = new Meaning
+                {
+                    Meaning1 = string.IsNullOrWhiteSpace(meaning) ? null : meaning,
+                };
+
                 var newWord = new Word
                 {
                     Word1 = word,
                     Meaning = newMeaning
                 };
-                var newSynonyms = wordHelper.GenerateWordList(synonyms, newMeaning);
 
                 await context.Meanings.AddAsync(newMeaning);
+
+                if (synonyms != null)
+                {
+                    var newSynonyms = wordHelper.GenerateWordList(synonyms.Distinct().Except(new[] { word }), newMeaning);
+                    await context.Words.AddRangeAsync(newSynonyms);
+                }
+
                 var addedWord = (await context.Words.AddAsync(newWord)).Entity;
-                await context.Words.AddRangeAsync(newSynonyms);
                 await context.SaveChangesAsync();
 
                 return await Task.FromResult(addedWord.Id);
@@ -45,11 +55,12 @@ namespace Thesaurus
 
         public async Task AddSynonymsForWordAsync(int wordId, List<string> synonyms)
         {
-            var word = context.Words.FirstOrDefault(word => word.Id == wordId);
+            var word = context.Words.Include(w => w.Meaning).FirstOrDefault(word => word.Id == wordId);
             if (word != null)
             {
                 var meaning = word.Meaning;
-                var newSynonyms = wordHelper.GenerateWordList(synonyms, meaning);
+                var existSynonyms = await context.Words.Where(w => w.MeaningId == meaning.Id).Select(s => s.Word1).ToListAsync();
+                var newSynonyms = wordHelper.GenerateWordList(synonyms.Distinct().Except(existSynonyms), meaning);
 
                 await context.Words.AddRangeAsync(newSynonyms);
                 await context.SaveChangesAsync();
@@ -60,12 +71,32 @@ namespace Thesaurus
             }
         }
 
-        public async Task RemoveWordAsync(int wordId)
+        public async Task EditWordMeaningAsync(int wordId, string meaning)
         {
             var word = context.Words.FirstOrDefault(word => word.Id == wordId);
             if (word != null)
             {
+                word.Meaning.Meaning1 = meaning;
+                await context.SaveChangesAsync();
+            }
+            else
+            {
+                throw new InvalidOperationException($"Can't find word with ID = {wordId}.");
+            }
+        }
+
+        public async Task RemoveWordAsync(int wordId)
+        {
+            var word = context.Words.Include(w => w.Meaning).FirstOrDefault(word => word.Id == wordId);
+            if (word != null)
+            {
+                var meaning = word.Meaning;
+                var synonymsCount = context.Words.Where(w => w.MeaningId == meaning.Id).Count();
                 context.Words.Remove(word);
+                if (synonymsCount == 1)
+                {
+                    context.Meanings.Remove(meaning);
+                }
                 await context.SaveChangesAsync();
             }
             else
@@ -131,16 +162,19 @@ namespace Thesaurus
             }
         }
 
-        public async Task<List<string>> GetSynonymsOfWordAsync(int wordId)
+        public async Task<SynonymsDTO> GetSynonymsOfWordAsync(int wordId)
         {
-            var word = context.Words.FirstOrDefault(word => word.Id == wordId);
+            var word = context.Words.Include(w => w.Meaning).FirstOrDefault(word => word.Id == wordId);
             if (word != null)
             {
                 var meaning = word.Meaning;
-                var synonyms = await context.Words.Where(word => word.MeaningId == meaning.Id && word.Id != wordId)
-                    .Select(synonym => synonym.Word1)
-                    .ToListAsync();
-                return synonyms;
+                var synonyms = await context.Words.Where(word => word.MeaningId == meaning.Id).ToListAsync();
+
+                return new SynonymsDTO
+                {
+                    Synonyms = synonyms.Select(s => new WordDTO { Id = s.Id, Word = s.Word1 }).ToList(),
+                    Meaning = meaning.Meaning1
+                };
             }
             else
             {
@@ -150,18 +184,19 @@ namespace Thesaurus
 
         public async Task<List<string>> GetAllWordsAsync() => await context.Words.Select(word => word.Word1).ToListAsync();
 
-        public async Task<List<List<string>>> GetAllWordsGroupedAsync()
+        public async Task<List<SynonymsDTO>> GetAllWordsGroupedAsync()
         {
             var meanings = await context.Meanings.ToListAsync();
-            var result = new List<List<string>>();
+            var result = new List<SynonymsDTO>();
             foreach (var meaning in meanings)
             {
-                var synonymsGroup = new List<string>();
+                var synonyms = await context.Words.Where(word => word.MeaningId == meaning.Id).ToListAsync();
 
-                var synonyms = context.Words.Where(word => word.MeaningId == meaning.Id);
-                synonymsGroup.AddRange(synonyms.Select(word => word.Word1));
-
-                result.Add(synonymsGroup);
+                result.Add(new SynonymsDTO
+                {
+                    Synonyms = synonyms.Select(s => new WordDTO { Id = s.Id, Word = s.Word1 }).ToList(),
+                    Meaning = meaning.Meaning1
+                });
             }
 
             return result;

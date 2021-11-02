@@ -13,6 +13,7 @@ namespace Thesaurus.Models
         }
 
         public int Id { get; set; }
+        public string Meaning1 { get; set; }
 
         public virtual ICollection<Word> Words { get; set; }
     }
